@@ -7,4 +7,5 @@ numpy
 scipy
 websockets
 asyncio
-pyinstaller
+py2app
+websocket-clientwebsocket-client

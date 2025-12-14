@@ -1,319 +1,501 @@
+# ============================================================
+# The Voice — ASR (Volc BigModel) + TTS (Volc HTTP) + Text Input
+# ============================================================
+import os
 import tkinter as tk
 from tkinter import font
 import tkinter.ttk as ttk
 import threading
-import queue
 import sounddevice as sd
 import numpy as np
 import scipy.io.wavfile as wav
-import tempfile
-import os
-import glob
 import time
 import json
-import base64
-import requests
 import uuid
 from pathlib import Path
+import struct
+import subprocess
+import base64
+import hashlib
+import hmac
+import requests
+
+import websocket
 import google.generativeai as genai
-import config
 
-# Import TTS pipeline components
-import generate_prayer_audio
-from generate_prayer_audio import volc_sign
+# ============================================================
+# CONFIG MODULE (in-memory)
+# ============================================================
 
-# =============================
-# SETTINGS MANAGEMENT
-# =============================
+
+class Config:
+    pass
+
+
+config = Config()
+
+# ============================================================
+# USER CONFIG (LOCAL)
+# ============================================================
 
 USER_CONFIG_DIR = Path.home() / ".the-voice"
 USER_CONFIG_FILE = USER_CONFIG_DIR / "config.json"
 
+DEFAULT_ASR_WS_URL = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_nostream"
+DEFAULT_TTS_URL = "https://openspeech.bytedance.com/api/v3/tts/unidirectional"
+
+
 def load_user_config():
-    """Load user config from JSON and update the config module."""
     if not USER_CONFIG_FILE.exists():
         return False
-    
-    try:
-        with open(USER_CONFIG_FILE, 'r') as f:
-            data = json.load(f)
-            
-        config.VOLC_APP_ID = data.get("VOLC_APP_ID", "")
-        config.VOLC_ACCESS_KEY = data.get("VOLC_ACCESS_KEY", "")
-        config.VOLC_SECRET_KEY = data.get("VOLC_SECRET_KEY", "")
-        config.GEMINI_API_KEY = data.get("GEMINI_API_KEY", "")
-        return True
-    except Exception as e:
-        print(f"Error loading config: {e}")
-        return False
+    with open(USER_CONFIG_FILE, "r") as f:
+        data = json.load(f)
+    for k, v in data.items():
+        setattr(config, k, v)
+    return True
 
-def save_user_config(app_id, access_key, secret_key, gemini_key):
-    """Save user config to JSON and update the config module."""
+
+def save_user_config(data: dict):
     USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    
-    data = {
-        "VOLC_APP_ID": app_id,
-        "VOLC_ACCESS_KEY": access_key,
-        "VOLC_SECRET_KEY": secret_key,
-        "GEMINI_API_KEY": gemini_key
-    }
-    
-    with open(USER_CONFIG_FILE, 'w') as f:
+    with open(USER_CONFIG_FILE, "w") as f:
         json.dump(data, f, indent=2)
-        
-    config.VOLC_APP_ID = app_id
-    config.VOLC_ACCESS_KEY = access_key
-    config.VOLC_SECRET_KEY = secret_key
-    config.GEMINI_API_KEY = gemini_key
+    for k, v in data.items():
+        setattr(config, k, v)
+
+
+# ============================================================
+# SETTINGS DIALOG
+# ============================================================
+
 
 class SettingsDialog(tk.Toplevel):
     def __init__(self, parent):
         super().__init__(parent)
         self.title("Settings")
-        self.geometry("400x350")
+        self.geometry("520x600")
         self.configure(bg="#1a1a1a")
-        
-        self.parent = parent
-        self.result = None
-        
+
         style = ttk.Style()
         style.configure("TLabel", background="#1a1a1a", foreground="#cccccc")
-        style.configure("TButton", background="#333333", foreground="#333333")
-        
-        # Volc Engine
-        ttk.Label(self, text="Volcano App ID:").pack(pady=(10, 0))
-        self.volc_app_id = tk.Entry(self, width=40)
-        self.volc_app_id.pack()
-        self.volc_app_id.insert(0, getattr(config, 'VOLC_APP_ID', ''))
 
-        ttk.Label(self, text="Volcano Access Key:").pack(pady=(10, 0))
-        self.volc_access_key = tk.Entry(self, width=40)
-        self.volc_access_key.pack()
-        self.volc_access_key.insert(0, getattr(config, 'VOLC_ACCESS_KEY', ''))
+        def add(label, key, show=None):
+            ttk.Label(self, text=label).pack(anchor="w", padx=20, pady=(10, 0))
+            e = tk.Entry(self, width=55, show=show)
+            e.pack(padx=20)
+            e.insert(0, getattr(config, key, ""))
+            return e
 
-        ttk.Label(self, text="Volcano Secret Key:").pack(pady=(10, 0))
-        self.volc_secret_key = tk.Entry(self, width=40, show="*")
-        self.volc_secret_key.pack()
-        self.volc_secret_key.insert(0, getattr(config, 'VOLC_SECRET_KEY', ''))
-        
-        # Gemini
-        ttk.Label(self, text="Gemini API Key:").pack(pady=(20, 0))
-        self.gemini_key = tk.Entry(self, width=40, show="*")
-        self.gemini_key.pack()
-        self.gemini_key.insert(0, getattr(config, 'GEMINI_API_KEY', ''))
-        
-        # Save Button
-        save_btn = tk.Button(self, text="Save", command=self.on_save, bg="#333333", fg="#000000")
-        save_btn.pack(pady=20)
-        
-    def on_save(self):
+        ttk.Label(self, text="— Volcano ASR —", font=("Arial", 10, "bold")).pack(
+            anchor="w", padx=20, pady=(15, 0)
+        )
+        self.asr_app = add("ASR App ID", "VOLC_ASR_APP_ID")
+        self.asr_res = add("ASR Resource ID (BigModel)", "VOLC_ASR_RESOURCE_ID")
+
+        ttk.Label(self, text="— Volcano TTS —", font=("Arial", 10, "bold")).pack(
+            anchor="w", padx=20, pady=(15, 0)
+        )
+        self.tts_app = add("TTS App ID", "VOLC_TTS_APP_ID")
+
+        ttk.Label(
+            self, text="— Volcano Auth (Shared) —", font=("Arial", 10, "bold")
+        ).pack(anchor="w", padx=20, pady=(15, 0))
+        self.access = add("Access Key", "VOLC_ACCESS_KEY")
+        self.secret = add("Secret Key (TTS only)", "VOLC_SECRET_KEY", show="*")
+
+        ttk.Label(self, text="— LLM —", font=("Arial", 10, "bold")).pack(
+            anchor="w", padx=20, pady=(15, 0)
+        )
+        self.gemini = add("Gemini API Key", "GEMINI_API_KEY", show="*")
+
+        tk.Button(self, text="Save", command=self.save).pack(pady=25)
+
+    def save(self):
         save_user_config(
-            self.volc_app_id.get().strip(),
-            self.volc_access_key.get().strip(),
-            self.volc_secret_key.get().strip(),
-            self.gemini_key.get().strip()
+            {
+                "VOLC_ASR_APP_ID": self.asr_app.get().strip(),
+                "VOLC_ASR_RESOURCE_ID": self.asr_res.get().strip(),
+                "VOLC_TTS_APP_ID": self.tts_app.get().strip(),
+                "VOLC_ACCESS_KEY": self.access.get().strip(),
+                "VOLC_SECRET_KEY": self.secret.get().strip(),
+                "GEMINI_API_KEY": self.gemini.get().strip(),
+                "VOLC_ASR_WS_URL": DEFAULT_ASR_WS_URL,
+                "VOLC_TTS_URL": DEFAULT_TTS_URL,
+            }
         )
         self.destroy()
 
-# =============================
-# CONFIGURATION
-# =============================
 
-SAMPLE_RATE = 16000 # Volcano ASR often prefers 16k
+# ============================================================
+# AUDIO CONFIG
+# ============================================================
+
+SAMPLE_RATE = 16000
 CHANNELS = 1
 TMP_DIR = Path("output/tmp")
 TMP_DIR.mkdir(parents=True, exist_ok=True)
 
-# =============================
-# BACKEND: ASR
-# =============================
+# ============================================================
+# ASR — Volc BigModel Streaming (with partial results)
+# ============================================================
 
-def recognize_speech_volc(audio_path):
-    """
-    Sends audio to Volcano Engine ASR (HTTP One-Sentence Recognition).
-    """
-    if not hasattr(config, 'VOLC_ASR_URL'):
-        print("⚠ VOLC_ASR_URL not found in config.")
-        return None
 
-    # Read audio and encode to base64
-    with open(audio_path, "rb") as f:
-        audio_data = f.read()
-    b64_audio = base64.b64encode(audio_data).decode("utf-8")
-    
-    req_id = str(uuid.uuid4())
-    cluster = getattr(config, 'VOLC_ASR_CLUSTER', 'volcengine_input_common')
-    
-    payload = {
-        "app": {
-            "appid": config.VOLC_APP_ID,
-            "token": config.VOLC_ACCESS_KEY,
-            "cluster": cluster
-        },
-        "user": {
-            "uid": "prayer-room-user"
-        },
-        "audio": {
-            "format": "wav",
-            "rate": 16000,
-            "bits": 16,
-            "channel": 1,
-            "language": "en-US",
-        },
-        "request": {
-            "reqid": req_id,
-            "workflow": "audio_in,resample,partition,vad,fe,decode,itn,nlu_punctuate",
-            "sequence": 1,
-            "nbest": 1,
-            "format": "wav",
-            "command": "query"
-        }
-    }
-    
-    # Volcano ASR HTTP body is often just the audio for raw, 
-    # OR a JSON wrapper. The docs vary. 
-    # Using the standardized JSON submission if supported, or header-based.
-    # Let's try the JSON method similar to TTS which is often supported for unified gateways.
-    # HOWEVER, standard Volc ASR often puts audio in the body and metadata in headers.
-    # Let's try the common JSON-body approach for "Full-link" API if available.
-    
-    # Actually, simpler approach for Volcano ASR:
-    # Use the `volcengine` python SDK structure manually.
-    # The payload above is for the websocket/json gateway.
-    # Let's stick to the JSON payload with "data" field if we want to mimic TTS style:
-    
-    payload_full = payload.copy()
-    payload_full["data"] = b64_audio
-    
-    body = json.dumps(payload_full, ensure_ascii=False)
-    signature = volc_sign(body, config.VOLC_SECRET_KEY)
-    
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"HMAC-SHA256 {signature}"
-    }
-    
-    try:
-        resp = requests.post(
-            config.VOLC_ASR_URL, 
-            headers=headers, 
-            data=body.encode("utf-8"), 
-            timeout=10
+def _pack_asr(msg_type, flags, payload, seq=None):
+    version = 1
+    header_words = 2 if seq is not None else 1
+    header = bytes(
+        [
+            (version << 4) | header_words,
+            (msg_type << 4) | flags,
+            0x10,
+            0,
+        ]
+    )
+    ext = struct.pack(">i", seq) if seq is not None else b""
+    return header + ext + struct.pack(">I", len(payload)) + payload
+
+
+def recognize_speech_volc_ws(wav_path, partial_cb=None):
+    ws = websocket.create_connection(
+        config.VOLC_ASR_WS_URL,
+        header=[
+            f"X-Api-App-Key: {config.VOLC_ASR_APP_ID}",
+            f"X-Api-Access-Key: {config.VOLC_ACCESS_KEY}",
+            f"X-Api-Resource-Id: {config.VOLC_ASR_RESOURCE_ID}",
+            f"X-Api-Connect-Id: {uuid.uuid4()}",
+        ],
+        timeout=10,
+    )
+
+    rate, data = wav.read(wav_path)
+    if data.ndim == 2:
+        data = data[:, 0]
+    pcm = data.astype(np.int16).tobytes()
+
+    ws.send_binary(
+        _pack_asr(
+            1,
+            0,
+            json.dumps(
+                {
+                    "audio": {
+                        "format": "pcm",
+                        "rate": SAMPLE_RATE,
+                        "language": "en-US",
+                    },
+                    "request": {"enable_punc": True},
+                }
+            ).encode(),
         )
-        resp.raise_for_status()
-        
-        # Parse response
-        # Expected: { "result": [{ "text": "..." }], ... }
-        data = resp.json()
-        if "result" in data and len(data["result"]) > 0:
-            return data["result"][0]["text"]
-        
-        # Fallback check
-        if "message" in data and data["message"] == "Success":
-             # Sometimes structure differs
-             pass
-             
-        print(f"ASR Raw Response: {data}")
-        return None
+    )
+
+    chunk = int(SAMPLE_RATE * 2 * 0.2)
+    seq = 1
+    final_text = ""
+
+    for i in range(0, len(pcm), chunk):
+        ws.send_binary(_pack_asr(2, 1, pcm[i : i + chunk], seq=seq))
+        seq += 1
+
+        ws.settimeout(0.2)
+        try:
+            msg = ws.recv()
+            if isinstance(msg, bytes):
+                j = json.loads(msg[8:].decode(errors="ignore"))
+                text = j.get("text") or j.get("result", {}).get("text")
+                if text:
+                    final_text = text
+                    if partial_cb:
+                        partial_cb(text)
+        except:
+            pass
+
+        time.sleep(0.2)
+
+    ws.send_binary(_pack_asr(2, 3, b"", seq=-seq))
+    time.sleep(0.8)
+    ws.close()
+    return final_text.strip() if final_text else None
+
+
+# ============================================================
+# TTS — Volc HTTP (HMAC-SHA256)
+# ============================================================
+
+
+def volc_tts_sign(method, path, body, access_key, secret_key, service="tts"):
+    from datetime import datetime
+    import hashlib
+    import hmac
+
+    now = datetime.utcnow()
+    x_date = now.strftime("%Y%m%dT%H%M%SZ")
+    date = now.strftime("%Y%m%d")
+
+    body_hash = hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+    canonical_request = "\n".join(
+        [
+            method,
+            path,
+            "",
+            "host:openspeech.bytedance.com\nx-date:" + x_date,
+            "",
+            "host;x-date",
+            body_hash,
+        ]
+    )
+
+    algorithm = "HMAC-SHA256"
+    credential_scope = f"{date}/{service}/request"
+    string_to_sign = "\n".join(
+        [
+            algorithm,
+            x_date,
+            credential_scope,
+            hashlib.sha256(canonical_request.encode()).hexdigest(),
+        ]
+    )
+
+    def hmac_sha256(key, msg):
+        return hmac.new(key, msg.encode(), hashlib.sha256).digest()
+
+    k_date = hmac_sha256(("HMAC-SHA256" + secret_key).encode(), date)
+    k_service = hmac_sha256(k_date, service)
+    k_signing = hmac_sha256(k_service, "request")
+
+    signature = hmac.new(k_signing, string_to_sign.encode(), hashlib.sha256).hexdigest()
+
+    authorization = (
+        f"{algorithm} "
+        f"Credential={access_key}/{credential_scope}, "
+        f"SignedHeaders=host;x-date, "
+        f"Signature={signature}"
+    )
+
+    return authorization, x_date
+
+
+def tts_http_stream(url, headers, params, audio_save_path):
+    session = requests.Session()
+    try:
+        print("请求的url:", url)
+        print("请求的headers:", headers)
+        print("请求的params:\n", params)
+        response = session.post(url, headers=headers, json=params, stream=True)
+        print(response)
+        # 打印response headers
+        print(f"code: {response.status_code} header: {response.headers}")
+        logid = response.headers.get("X-Tt-Logid")
+        print(f"X-Tt-Logid: {logid}")
+
+        # 用于存储音频数据
+        audio_data = bytearray()
+        total_audio_size = 0
+        for chunk in response.iter_lines(decode_unicode=True):
+            if not chunk:
+                continue
+            data = json.loads(chunk)
+
+            if data.get("code", 0) == 0 and "data" in data and data["data"]:
+                chunk_audio = base64.b64decode(data["data"])
+                audio_size = len(chunk_audio)
+                total_audio_size += audio_size
+                audio_data.extend(chunk_audio)
+                continue
+            if data.get("code", 0) == 0 and "sentence" in data and data["sentence"]:
+                print("sentence_data:", data)
+                continue
+            if data.get("code", 0) == 20000000:
+                if "usage" in data:
+                    print("usage:", data["usage"])
+                break
+            if data.get("code", 0) > 0:
+                print(f"error response:{data}")
+                break
+
+        # 保存音频文件
+        if audio_data:
+            with open(audio_save_path, "wb") as f:
+                f.write(audio_data)
+            print(
+                f"文件保存在{audio_save_path},文件大小: {len(audio_data) / 1024:.2f} KB"
+            )
+            # 确保生成的音频有正确的访问权限
+            os.chmod(audio_save_path, 0o644)
 
     except Exception as e:
-        print(f"ASR Error: {e}")
-        return None
+        print(f"请求失败: {e}")
+    finally:
+        response.close()
+        session.close()
 
 
-# =============================
-# BACKEND: WORKER
-# =============================
+def tts_volc(text: str) -> Path:
+    """
+    Volcano TTS (Unidirectional)
+    Doc: https://www.volcengine.com/docs/6561/1598757
+    """
+
+    headers = {
+        # === 必须的鉴权 Header（无签名）===
+        "X-Api-App-Id": config.VOLC_TTS_APP_ID,
+        "X-Api-Access-Key": config.VOLC_ACCESS_KEY,
+        "X-Api-Resource-Id": "seed-tts-1.0",  # 例如: seed-tts-2.0
+        "X-Api-Request-Id": str(uuid.uuid4()),
+        "Content-Type": "application/json",
+    }
+
+    body = {
+        "req_params": {
+            # ===== 文本 =====
+            "text": text,
+            # ===== 发音人（必须）=====
+            # ⚠️ 这个一定要是文档中支持的 speaker
+            "speaker": "en_male_sylus_emo_v2_mars_bigtts",
+            # "speaker": "en_male_bruce_moon_bigtts",
+            # ===== 音频参数（必须）=====
+            "audio_params": {"format": "pcm", "sample_rate": 24000, "speech_rate": -20},
+            # "additions": {"enable_language_detector": True},
+            # ===== 可选：模型版本 =====
+            # "model": "seed-tts-1.1",
+        },
+    }
+
+    audio_save_path = TMP_DIR / f"tts_{int(time.time())}.pcm"
+    tts_http_stream(config.VOLC_TTS_URL, headers, body, audio_save_path)
+
+    return audio_save_path
+
+
+# ============================================================
+# AUDIO RECORDING
+# ============================================================
+
 
 class AudioHandler:
     def __init__(self):
+        self.data = []
         self.recording = False
-        self.audio_data = []
-        self.stream = None
-        self.start_time = 0
 
-    def start_recording(self):
-        if self.recording:
-            return
+    def start(self):
+        self.data.clear()
         self.recording = True
-        self.audio_data = []
-        self.start_time = time.time()
-        
-        def callback(indata, frames, time, status):
-            if self.recording:
-                self.audio_data.append(indata.copy())
 
-        self.stream = sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, callback=callback)
+        def cb(indata, *_):
+            if self.recording:
+                self.data.append(indata.copy())
+
+        self.stream = sd.InputStream(
+            samplerate=SAMPLE_RATE, channels=CHANNELS, callback=cb
+        )
         self.stream.start()
 
-    def stop_recording(self):
-        if not self.recording:
-            return None
+    def stop(self):
         self.recording = False
         self.stream.stop()
         self.stream.close()
-        
-        if not self.audio_data:
+        if not self.data:
             return None
-            
-        audio_concatenated = np.concatenate(self.audio_data, axis=0)
-        
-        duration = time.time() - self.start_time
-        if duration < 0.5:
-            return None
-            
-        filename = TMP_DIR / f"input_{int(time.time())}.wav"
-        # Save as 16-bit PCM WAV
-        wav.write(str(filename), SAMPLE_RATE, (audio_concatenated * 32767).astype(np.int16))
-        return filename
+        arr = np.concatenate(self.data, axis=0)
+        path = TMP_DIR / f"input_{int(time.time())}.wav"
+        wav.write(path, SAMPLE_RATE, (arr * 32767).astype(np.int16))
+        return path
 
-def process_interaction(audio_path, update_status_callback, on_complete_callback):
+
+def postprocess_audio(
+    input_pcm: Path,
+    ir_path: Path,
+    prepend_ms: int = 1000,
+    append_ms: int = 1200,
+    sample_rate: int = 24000,
+):
+    """
+    Post-process raw PCM TTS audio into a calm, prayer-room style voice.
+
+    Design principles:
+    - No loudnorm (preserve natural dynamics)
+    - Slower perceived pace
+    - Gentle volume lift
+    - Space for silence
+    - No harshness
+    """
+
+    output_audio = input_pcm.parent / f"{uuid.uuid4().hex}_processed.wav"
+
+    filter_graph = (
+        # Pause before speaking
+        f"adelay={prepend_ms}|{prepend_ms},"
+        # Slow down slightly (fine-tuning; main speed should be set at TTS)
+        "atempo=0.95,"
+        # Reduce sibilance before space
+        "deesser=i=0.4,"
+        # Convolution reverb (IR as second input)
+        "afir,"
+        # Silence tail
+        f"apad=pad_dur={append_ms / 1000:.2f},"
+        # Gentle gain (no normalization)
+        "volume=2.0"
+    )
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        # Input 0: raw PCM from TTS
+        "-f",
+        "s16le",
+        "-ar",
+        str(sample_rate),
+        "-ac",
+        "1",
+        "-i",
+        str(input_pcm),
+        # Input 1: mono impulse response
+        "-i",
+        str(ir_path),
+        # Audio processing graph
+        "-filter_complex",
+        filter_graph,
+        # Output WAV (stable for demo)
+        str(output_audio),
+    ]
+
+    subprocess.run(cmd, check=True)
+    return output_audio
+
+
+# ============================================================
+# CORE INTERACTION
+# ============================================================
+
+
+def process_interaction(audio_path, update, done, text_input=None):
     try:
-        if not audio_path:
-            update_status_callback("I didn't hear anything.")
-            time.sleep(1.5)
-            on_complete_callback()
-            return
+        if text_input:
+            user_text = text_input
+        else:
+            update("Listening…", interim=True)
 
-        # 1. ASR (Volcano)
-        update_status_callback("Listening...")
-        
-        # Check config
-        if not hasattr(config, 'VOLC_APP_ID'):
-            update_status_callback("Config Error: Missing VOLC keys.")
-            time.sleep(2)
-            on_complete_callback()
-            return
+            def on_partial(t):
+                update(t, interim=True)
 
-        user_text = recognize_speech_volc(audio_path)
-        
+            user_text = recognize_speech_volc_ws(audio_path, on_partial)
+
         if not user_text:
-            update_status_callback("Could not hear clearly.")
-            time.sleep(1.5)
-            on_complete_callback()
+            update("Could not hear clearly.")
+            time.sleep(1)
             return
 
-        print(f"USER SAID: {user_text}")
-
-        # 2. LLM (Gemini 3.0 Pro)
-        update_status_callback("Reflecting...")
-        
-        if not hasattr(config, 'GEMINI_API_KEY') or not config.GEMINI_API_KEY:
-            update_status_callback("Config Error: Missing GEMINI_API_KEY.")
-            time.sleep(2)
-            on_complete_callback()
-            return
+        update(user_text)
 
         genai.configure(api_key=config.GEMINI_API_KEY)
         # Using Gemini 3.0 Pro as requested
-        model = genai.GenerativeModel('gemini-3.0-pro')
+        model = genai.GenerativeModel("gemini-3-pro-preview")
 
         prompt = (
             "You are a theological narrator inspired by the moral tone of the Christian Gospels. "
-            "You are not God or Jesus. You speak calmly and slowly. "
+            "You speak calmly and slowly. Like a priest. If possible, use sentences from the Bible."
             "You do not give commands, predictions, or absolution. "
             "You invite reflection and moral attention. "
-            "You respect silence and do not try to conclude everything. "
             "\n\n"
             "The user said:\n"
             f'"{user_text}"\n\n'
@@ -323,159 +505,122 @@ def process_interaction(audio_path, update_status_callback, on_complete_callback
             "Return ONLY the spoken text."
         )
 
-        response = model.generate_content(prompt)
-        gospel_response = response.text.strip()
-        print(f"RESPONSE: {gospel_response}")
+        resp = model.generate_content(prompt)
+        spoken = resp.text.strip()
+        print("LLM Response:", spoken)
+        update("Preparing voice…")
+        out = tts_volc(spoken)
+        update("Preparing voice…")
 
-        # 3. TTS & Audio Gen (Volcano + Post-proc)
-        update_status_callback("Preparing voice...")
-        output_path = generate_prayer_audio.generate_prayer_audio(gospel_response)
-        
-        # 4. Playback
-        update_status_callback("...")
-        import subprocess
-        subprocess.run(["afplay", str(output_path)])
+        processed = postprocess_audio(
+            out,
+            ir_path="ir/chapel_mono.wav",
+            prepend_ms=900,
+            append_ms=900,
+        )
 
-    except Exception as e:
-        print(f"Process Error: {e}")
-        update_status_callback("Something went wrong.")
-        time.sleep(2)
+        subprocess.run(["afplay", str(processed)])
+
     finally:
-        on_complete_callback()
+        done()
 
-# =============================
+
+# ============================================================
 # GUI
-# =============================
+# ============================================================
 
-class PrayerRoomApp:
+
+class App:
     def __init__(self, root):
         self.root = root
-        self.root.title("The Voice")
-        self.root.geometry("600x400")
-        self.root.configure(bg="#1a1a1a")
+        root.title("The Voice")
+        root.geometry("620x440")
+        root.configure(bg="#1a1a1a")
 
-        # Center window
-        screen_width = root.winfo_screenwidth()
-        screen_height = root.winfo_screenheight()
-        x_c = int((screen_width/2) - (600/2))
-        y_c = int((screen_height/2) - (400/2))
-        self.root.geometry(f"600x400+{x_c}+{y_c}")
-
-        self.status_font = font.Font(family="Georgia", size=18)
+        self.font = font.Font(family="Georgia", size=18)
         self.label = tk.Label(
-            root, 
-            text="Press SPACE to speak.", 
-            font=self.status_font, 
-            bg="#1a1a1a", 
+            root,
+            text="Press SPACE to speak or type below.",
+            font=self.font,
+            bg="#1a1a1a",
             fg="#cccccc",
-            wraplength=500
+            wraplength=520,
         )
         self.label.pack(expand=True)
 
-        self.audio_handler = AudioHandler()
+        frame = tk.Frame(root, bg="#1a1a1a")
+        frame.pack(pady=10)
+
+        self.entry = tk.Entry(frame, width=42, font=("Arial", 14))
+        self.entry.pack(side=tk.LEFT, padx=5)
+        self.entry.bind("<Return>", lambda e: self.send_text())
+
+        tk.Button(frame, text="Send", command=self.send_text).pack(side=tk.LEFT)
+
+        tk.Button(root, text="⚙ Settings", command=self.open_settings).pack()
+
+        self.audio = AudioHandler()
         self.processing = False
-        self.space_pressed = False
+        self.space = False
 
-        self.root.bind('<KeyPress-space>', self.on_space_down)
-        self.root.bind('<KeyRelease-space>', self.on_space_up)
+        root.bind("<KeyPress-space>", self.down)
+        root.bind("<KeyRelease-space>", self.up)
 
-        # IR Selector
-        self.setup_ir_selector()
-
-        # Load user config
         load_user_config()
-        self.check_config()
-
-    def check_config(self):
-        # Check if keys are present
-        missing_keys = not (config.VOLC_APP_ID and config.VOLC_ACCESS_KEY and config.VOLC_SECRET_KEY and config.GEMINI_API_KEY)
-        if missing_keys:
-            self.update_status("Please configure API keys.")
-            self.root.after(500, self.open_settings)
 
     def open_settings(self):
-        dlg = SettingsDialog(self.root)
-        self.root.wait_window(dlg)
-        self.update_status("Press SPACE to speak.")
+        SettingsDialog(self.root)
 
-    def setup_ir_selector(self):
-        self.ir_frame = tk.Frame(self.root, bg="#1a1a1a")
-        self.ir_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=20, pady=20)
-        
-        # Settings Button
-        tk.Button(self.ir_frame, text="⚙", command=self.open_settings, bg="#333333", fg="#000000", width=3).pack(side=tk.RIGHT, padx=5)
-
-        tk.Label(self.ir_frame, text="Reverb:", bg="#1a1a1a", fg="#888888").pack(side=tk.LEFT)
-        
-        # Find IR files
-        self.ir_files = sorted(glob.glob("ir/**/*.wav", recursive=True))
-        # Filter out likely non-IR files (e.g. examples)
-        self.ir_files = [f for f in self.ir_files if "examples" not in f.lower()]
-        
-        # Make paths relative for display
-        self.ir_options = [os.path.relpath(f) for f in self.ir_files]
-        
-        self.selected_ir = tk.StringVar()
-        
-        if self.ir_options:
-            # Default to one if available
-            default_ir = self.ir_options[0]
-            # Try to find a nice default (e.g. 1st baptist or chapel)
-            for opt in self.ir_options:
-                if "1st_baptist" in opt and "balcony" in opt:
-                    default_ir = opt
-                    break
-            
-            self.selected_ir.set(default_ir)
-            config.AUDIO_PROFILE["impulse_response"] = default_ir
-        
-        style = ttk.Style()
-        style.theme_use('default')
-        style.configure("TCombobox", fieldbackground="#333333", background="#333333", foreground="#cccccc", arrowcolor="#cccccc")
-        
-        self.ir_combo = ttk.Combobox(self.ir_frame, textvariable=self.selected_ir, values=self.ir_options, state="readonly", width=50)
-        self.ir_combo.pack(side=tk.LEFT, padx=10)
-        self.ir_combo.bind("<<ComboboxSelected>>", self.on_ir_change)
-
-    def on_ir_change(self, event):
-        path = self.selected_ir.get()
-        print(f"Selected IR: {path}")
-        config.AUDIO_PROFILE["impulse_response"] = path
-
-    def update_status(self, text):
-        self.label.config(text=text)
+    def update(self, text, interim=False):
+        self.label.config(text=text, fg="#888888" if interim else "#cccccc")
         self.root.update_idletasks()
 
-    def on_complete(self):
+    def done(self):
         self.processing = False
-        self.update_status("Press SPACE to speak.")
+        self.update("Press SPACE to speak or type below.")
 
-    def on_space_down(self, event):
-        if self.processing or self.space_pressed:
-            return
-        self.space_pressed = True
-        self.update_status("Listening...")
-        self.audio_handler.start_recording()
-
-    def on_space_up(self, event):
-        if not self.space_pressed:
-            return
-        self.space_pressed = False
-        
+    def send_text(self):
         if self.processing:
             return
-
-        self.update_status("...")
-        wav_path = self.audio_handler.stop_recording()
-        
+        text = self.entry.get().strip()
+        if not text:
+            return
+        self.entry.delete(0, tk.END)
         self.processing = True
-        t = threading.Thread(
-            target=process_interaction, 
-            args=(wav_path, self.update_status, self.on_complete)
-        )
-        t.start()
+        self.update("Thinking…")
+        threading.Thread(
+            target=process_interaction,
+            args=(None, self.update, self.done, text),
+            daemon=True,
+        ).start()
+
+    def down(self, _):
+        if self.processing or self.space:
+            return
+        if self.root.focus_get() == self.entry:
+            return
+        self.space = True
+        self.audio.start()
+        self.update("Listening…", interim=True)
+
+    def up(self, _):
+        if not self.space:
+            return
+        self.space = False
+        self.processing = True
+        wav_path = self.audio.stop()
+        threading.Thread(
+            target=process_interaction,
+            args=(wav_path, self.update, self.done),
+            daemon=True,
+        ).start()
+
+
+# ============================================================
+# MAIN
+# ============================================================
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = PrayerRoomApp(root)
+    App(root)
     root.mainloop()
