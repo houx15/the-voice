@@ -1,0 +1,10 @@
+google-cloud-texttospeech
+pydub
+google-generativeai
+requests
+sounddevice
+numpy
+scipy
+websockets
+asyncio
+pyinstaller

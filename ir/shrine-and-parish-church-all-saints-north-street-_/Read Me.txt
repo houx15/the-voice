@@ -1,0 +1,168 @@
+
+Format(s): 
+Mono
+B-Format (4 Channel Files)
+
+Mono: 
+
+    r1.wav
+
+Sample Rate: 96 kHz
+Number of Channels: 1
+Bits per Sample: 16
+Duration: 15 s
+File Size: 2.75 MB
+File Format: wav
+Source Sound: Sine sweep
+Source Location: Altar
+Microphone Location: Mid-left
+Source Receiver Distance (m): 12.25 m
+Source Height: 1.3 m
+Receiver Height: 1.7 m
+Temperature: 15 °C
+
+
+    r2.wav
+
+Sample Rate: 96 kHz
+Number of Channels: 1
+Bits per Sample: 16
+Duration: 15 s
+File Size: 2.75 MB
+File Format: wav
+Source Sound: Sine sweep
+Source Location: Altar
+Microphone Location: Mid-right
+Source Receiver Distance (m): 12.28 m
+Source Height: 1.7 m
+Receiver Height: 1.3 m
+Temperature: 15 °C
+
+
+    r3.wav
+
+Sample Rate: 96 kHz
+Number of Channels: 1
+Bits per Sample: 16
+Duration: 15 s
+File Size: 2.75 MB
+File Format: wav
+Source Sound: Sine sweep
+Source Location: Altar
+Microphone Location: Right side
+Source Receiver Distance (m): 12.4 m
+Source Height: 1.7 m
+Receiver Height: 1.3 m
+Temperature: 15 °C
+
+
+    r4.wav
+
+Sample Rate: 96 kHz
+Number of Channels: 1
+Bits per Sample: 16
+Duration: 15 s
+File Size: 2.75 MB
+File Format: wav
+Source Sound: sine seep
+Source Location: Altar
+Microphone Location: Left side
+Source Receiver Distance (m): 13.45 m
+Source Height: 1.7 m
+Receiver Height: 1.3 m
+Temperature: 15 °C
+
+
+    r5.wav
+
+Sample Rate: 96 kHz
+Number of Channels: 1
+Bits per Sample: 16
+Duration: 15 s
+File Size: 2.75 MB
+File Format: wav
+Source Sound: sine sweep
+Source Location: Altar
+Microphone Location: Upper right side
+Source Receiver Distance (m): 5.2 m
+Source Height: 1.7 m
+Receiver Height: 1.3 m
+Temperature: 15 °C
+
+
+    r6.wav
+
+Sample Rate: 96 kHz
+Number of Channels: 1
+Bits per Sample: 16
+Duration: 15 s
+File Size: 2.75 MB
+File Format: wav
+Source Sound: Sine sweep
+Source Location: Altar
+Microphone Location: Upper left side
+Source Receiver Distance (m): 4.5 m
+Source Height: 1.7 m
+Receiver Height: 1.3 m
+Temperature: 15 °C
+
+B-Format: Multichannel: 
+
+    r1_90_bformat.wav
+
+Sample Rate: 96 kHz
+Number of Channels: 4
+Bits per Sample: 16
+Duration: 21.75 s
+File Size: 15.93 MB
+File Format: wav
+
+
+    r2_90_bformat.wav
+
+Sample Rate: 96 kHz
+Number of Channels: 4
+Bits per Sample: 16
+Duration: 22.26 s
+File Size: 16.31 MB
+File Format: wav
+
+
+    r3_90_bformat.wav
+
+Sample Rate: 96 kHz
+Number of Channels: 4
+Bits per Sample: 16
+Duration: 22.91 s
+File Size: 16.78 MB
+File Format: wav
+
+
+    r4_90_bformat.wav
+
+Sample Rate: 96 kHz
+Number of Channels: 4
+Bits per Sample: 16
+Duration: 21.88 s
+File Size: 16.03 MB
+File Format: wav
+
+
+    r5_90_bformat.wav
+
+Sample Rate: 96 kHz
+Number of Channels: 4
+Bits per Sample: 16
+Duration: 21.83 s
+File Size: 15.99 MB
+File Format: wav
+
+
+    r6_90_bformat.wav
+
+Sample Rate: 96 kHz
+Number of Channels: 4
+Bits per Sample: 16
+Duration: 21.98 s
+File Size: 16.1 MB
+File Format: wav
