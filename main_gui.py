@@ -434,7 +434,7 @@ def postprocess_audio(
         # Silence tail
         f"apad=pad_dur={append_ms / 1000:.2f},"
         # Gentle gain (no normalization)
-        "volume=2.0"
+        "volume=3.0"
     )
 
     cmd = [
